@@ -5,10 +5,6 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 
-# ------------------------------------------------------------
-# 기본 설정
-# ------------------------------------------------------------
-
 st.set_page_config(
     page_title="박스오피스 대시보드",
     layout="wide"
@@ -17,18 +13,13 @@ st.set_page_config(
 st.title("🎬 박스오피스 대시보드")
 
 
-# ------------------------------------------------------------
-# KOBIS 인증키
-# ------------------------------------------------------------
-
 KOBIS_KEY = st.secrets["KOBIS_KEY"]
 
-KOBIS_URL = "https://www.kobis.or.kr/kobisopenapi/webservice/rest/boxoffice/searchDailyBoxOfficeList.json"
+KOBIS_DAILY_BOXOFFICE_URL = (
+    "https://www.kobis.or.kr/kobisopenapi/webservice/rest/boxoffice/"
+    "searchDailyBoxOfficeList.json"
+)
 
-
-# ------------------------------------------------------------
-# 날짜 설정
-# ------------------------------------------------------------
 
 today_korea = datetime.now(ZoneInfo("Asia/Seoul")).date()
 yesterday = today_korea - timedelta(days=1)
@@ -37,21 +28,20 @@ st.caption("오늘 박스오피스는 아직 집계 전이므로 어제 날짜�
 
 
 # ------------------------------------------------------------
-# KOBIS API 호출 함수
+# KOBIS 일별 박스오피스 API
+# ------------------------------------------------------------
+# item_per_page 값을 크게 주면 TOP 10보다 더 많은 영화 목록을 받을 수 있습니다.
+# 다만 KOBIS API 정책에 따라 너무 큰 값은 제한될 수 있습니다.
 # ------------------------------------------------------------
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def get_daily_boxoffice(target_dt):
-    """
-    target_dt 형식: YYYYMMDD
-    KOBIS 일별 박스오피스 데이터를 가져옵니다.
-    """
-
+def get_daily_boxoffice(target_dt, item_per_page=100):
     res = requests.get(
-        KOBIS_URL,
+        KOBIS_DAILY_BOXOFFICE_URL,
         params={
             "key": KOBIS_KEY,
-            "targetDt": target_dt
+            "targetDt": target_dt,
+            "itemPerPage": item_per_page
         },
         timeout=10
     )
@@ -61,7 +51,6 @@ def get_daily_boxoffice(target_dt):
 
     data = res.json()
 
-    # KOBIS는 인증키가 틀려도 status_code 200을 줄 수 있습니다.
     if "faultInfo" in data:
         raise ValueError("인증키가 올바르지 않습니다. Secrets의 KOBIS_KEY를 확인해 주세요.")
 
@@ -70,16 +59,7 @@ def get_daily_boxoffice(target_dt):
     return box_list
 
 
-# ------------------------------------------------------------
-# 데이터 정리 함수
-# ------------------------------------------------------------
-
 def make_boxoffice_dataframe(box_list):
-    """
-    KOBIS 박스오피스 목록을 데이터프레임으로 바꾸고
-    숫자 열을 정리합니다.
-    """
-
     df = pd.DataFrame(box_list)
 
     if df.empty:
@@ -102,13 +82,6 @@ def make_boxoffice_dataframe(box_list):
 
 
 def make_rank_change_text(row):
-    """
-    rankInten 값을 이용해 순위 증감을 표시합니다.
-    양수: 순위 상승
-    음수: 순위 하락
-    0: 변동 없음
-    """
-
     rank_inten = row["rankInten"]
 
     if row.get("rankOldAndNew", "") == "NEW":
@@ -124,10 +97,6 @@ def make_rank_change_text(row):
 
 
 def add_display_columns(df):
-    """
-    표시에 필요한 열을 추가합니다.
-    """
-
     df["순위증감"] = df.apply(make_rank_change_text, axis=1)
 
     df["영화명표시"] = df.apply(
@@ -140,9 +109,12 @@ def add_display_columns(df):
     return df
 
 
-def make_date_range_dataframe(start_date, end_date):
+def make_date_range_dataframe(start_date, end_date, item_per_page=100):
     """
-    선택한 날짜 범위의 일별 박스오피스 데이터를 모두 합쳐서 하나의 데이터프레임으로 만듭니다.
+    선택한 날짜 범위의 일별 박스오피스 데이터를 가져옵니다.
+
+    item_per_page=100이면 각 날짜별 박스오피스 100위까지 가져오므로,
+    TOP 10 밖 영화도 상당수 포함됩니다.
     """
 
     date_list = pd.date_range(start=start_date, end=end_date, freq="D")
@@ -153,7 +125,10 @@ def make_date_range_dataframe(start_date, end_date):
         date_obj = date_value.date()
         target_dt = date_obj.strftime("%Y%m%d")
 
-        daily_box_list = get_daily_boxoffice(target_dt)
+        daily_box_list = get_daily_boxoffice(
+            target_dt=target_dt,
+            item_per_page=item_per_page
+        )
 
         if not daily_box_list:
             continue
@@ -174,10 +149,6 @@ def make_date_range_dataframe(start_date, end_date):
 
     return result_df
 
-
-# ------------------------------------------------------------
-# 탭 구성
-# ------------------------------------------------------------
 
 tab1, tab2 = st.tabs([
     "📋 날짜별 박스오피스",
@@ -205,7 +176,10 @@ with tab1:
     st.caption(f"조회 기준일: {selected_date.strftime('%Y-%m-%d')}")
 
     try:
-        box_list = get_daily_boxoffice(target_dt)
+        box_list = get_daily_boxoffice(
+            target_dt=target_dt,
+            item_per_page=10
+        )
 
         if not box_list:
             st.warning("그날은 아직 집계 전입니다.")
@@ -214,7 +188,6 @@ with tab1:
             df = make_boxoffice_dataframe(box_list)
             df = add_display_columns(df)
 
-            # 1위 영화 지표 카드
             top = df.iloc[0]
 
             c1, c2, c3 = st.columns(3)
@@ -234,7 +207,6 @@ with tab1:
                 f"{top['audiAcc']:,}명"
             )
 
-            # 표 정리
             table = df[
                 [
                     "rank",
@@ -284,7 +256,6 @@ with tab1:
                 "🏆는 누적관객 100만 명을 넘은 영화입니다."
             )
 
-            # 관객수 상위 5편 막대그래프
             st.subheader("📊 관객수 상위 5편")
 
             top5 = table.sort_values("관객수", ascending=False).head(5)
@@ -305,11 +276,12 @@ with tab2:
     st.subheader("🎞️ 영화별 관객수 추이")
 
     st.info(
-        "날짜 범위를 선택하면 해당 기간의 일별 박스오피스 TOP 10에 등장한 영화 목록이 만들어집니다. "
-        "그중 영화 제목을 선택하면 그 영화의 일별 관객수 추이를 선그래프로 볼 수 있습니다."
+        "이 화면은 날짜별 박스오피스 목록을 TOP 100까지 가져온 뒤, "
+        "선택한 영화의 일별 관객수를 찾아 선그래프로 표시합니다. "
+        "따라서 TOP 10 밖에 있던 날짜도 100위 안에 있으면 실제 관객수가 표시됩니다."
     )
 
-    default_start = yesterday - timedelta(days=6)
+    default_start = yesterday - timedelta(days=13)
 
     selected_range = st.date_input(
         "조회할 날짜 범위를 선택하세요",
@@ -332,7 +304,6 @@ with tab2:
             st.warning("오늘 자료는 아직 집계 전이므로 어제까지만 선택할 수 있습니다.")
 
         else:
-            # 너무 긴 기간을 한 번에 조회하면 API 요청이 많아질 수 있으므로 제한합니다.
             max_days = 31
             selected_days = (end_date - start_date).days + 1
 
@@ -340,15 +311,27 @@ with tab2:
                 st.warning(f"한 번에 최대 {max_days}일까지만 조회할 수 있습니다.")
 
             else:
+                item_per_page = st.slider(
+                    "날짜별로 가져올 박스오피스 순위 범위",
+                    min_value=10,
+                    max_value=100,
+                    value=100,
+                    step=10,
+                    help="값이 클수록 TOP 10 밖 영화도 더 많이 찾을 수 있습니다."
+                )
+
                 try:
                     with st.spinner("선택한 기간의 박스오피스 데이터를 불러오는 중입니다..."):
-                        range_df = make_date_range_dataframe(start_date, end_date)
+                        range_df = make_date_range_dataframe(
+                            start_date=start_date,
+                            end_date=end_date,
+                            item_per_page=item_per_page
+                        )
 
                     if range_df.empty:
                         st.warning("선택한 기간은 아직 집계 전입니다.")
 
                     else:
-                        # 영화 목록 만들기
                         movie_options_df = (
                             range_df[["movieCd", "movieNm"]]
                             .drop_duplicates()
@@ -356,7 +339,6 @@ with tab2:
                             .reset_index(drop=True)
                         )
 
-                        # 같은 제목의 영화가 있을 수 있으므로 movieCd를 기준으로 선택합니다.
                         movie_name_count = movie_options_df["movieNm"].value_counts().to_dict()
 
                         movie_label_dict = {}
@@ -378,10 +360,8 @@ with tab2:
 
                         selected_movie_name = movie_label_dict[selected_movie_cd]
 
-                        # 선택한 영화 데이터만 추출
                         movie_df = range_df[range_df["movieCd"] == selected_movie_cd].copy()
 
-                        # 날짜별로 빠진 날짜를 보이게 하기 위해 전체 날짜 틀을 만듭니다.
                         full_date_df = pd.DataFrame({
                             "날짜": pd.date_range(start=start_date, end=end_date, freq="D").date
                         })
@@ -394,27 +374,15 @@ with tab2:
                                     "rank",
                                     "audiCnt",
                                     "audiAcc",
-                                    "scrnCnt"
+                                    "scrnCnt",
+                                    "showCnt"
                                 ]
                             ],
                             on="날짜",
                             how="left"
                         )
 
-                        # TOP 10에 없던 날짜 처리 옵션
-                        fill_missing_zero = st.checkbox(
-                            "일별 TOP 10에 없던 날짜를 0명으로 표시",
-                            value=False,
-                            help="체크하지 않으면 TOP 10에 없던 날짜는 선그래프에서 빈 값으로 처리됩니다."
-                        )
-
                         chart_df = movie_trend_df.copy()
-
-                        if fill_missing_zero:
-                            chart_df["관객수"] = chart_df["audiCnt"].fillna(0)
-                        else:
-                            chart_df["관객수"] = chart_df["audiCnt"]
-
                         chart_df["날짜"] = pd.to_datetime(chart_df["날짜"])
 
                         actual_df = movie_trend_df.dropna(subset=["audiCnt"]).copy()
@@ -449,16 +417,22 @@ with tab2:
                             st.subheader(f"📈 {selected_movie_name} 관객수 추이")
 
                             st.line_chart(
-                                chart_df.set_index("날짜")["관객수"]
+                                chart_df.set_index("날짜")["audiCnt"]
                             )
+
+                            missing_count = movie_trend_df["audiCnt"].isna().sum()
+
+                            if missing_count > 0:
+                                st.warning(
+                                    f"선택한 기간 중 {missing_count}일은 "
+                                    f"해당 영화가 일별 박스오피스 {item_per_page}위 안에 없어 "
+                                    "관객수를 가져오지 못했습니다."
+                                )
 
                             st.caption(
-                                "이 그래프는 선택한 기간의 KOBIS 일별 박스오피스 TOP 10 자료를 기준으로 합니다. "
-                                "따라서 영화가 TOP 10에 없던 날짜의 실제 관객수는 이 API만으로는 확인되지 않을 수 있습니다."
+                                f"현재 그래프는 각 날짜별 박스오피스 {item_per_page}위까지 조회한 결과입니다. "
+                                "선택한 영화가 그 순위 밖에 있던 날짜는 KOBIS OpenAPI 응답에 포함되지 않을 수 있습니다."
                             )
-
-                            # 상세 표 표시
-                            st.subheader("📋 날짜별 상세 데이터")
 
                             display_df = movie_trend_df.copy()
 
@@ -467,7 +441,8 @@ with tab2:
                                     "rank": "순위",
                                     "audiCnt": "관객수",
                                     "audiAcc": "누적관객",
-                                    "scrnCnt": "스크린수"
+                                    "scrnCnt": "스크린수",
+                                    "showCnt": "상영횟수"
                                 }
                             )
 
@@ -477,9 +452,12 @@ with tab2:
                                     "순위",
                                     "관객수",
                                     "누적관객",
-                                    "스크린수"
+                                    "스크린수",
+                                    "상영횟수"
                                 ]
                             ]
+
+                            st.subheader("📋 날짜별 상세 데이터")
 
                             st.dataframe(
                                 display_df,
@@ -505,6 +483,10 @@ with tab2:
                                     "스크린수": st.column_config.NumberColumn(
                                         "스크린수",
                                         format="%d개"
+                                    ),
+                                    "상영횟수": st.column_config.NumberColumn(
+                                        "상영횟수",
+                                        format="%d회"
                                     )
                                 }
                             )
